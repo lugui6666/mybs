@@ -2,7 +2,6 @@ package com.whpu.mybs.common.utils;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.whpu.mybs.common.enums.ResultCode;
 import com.whpu.mybs.common.exception.BusinessException;
 
 /**
@@ -21,13 +20,13 @@ public final class JsonValidator {
      */
     public static boolean isValidJson(String json) {
         if (json == null || json.trim().isEmpty()) {
-            return true;          // 可根据业务需要改为 true（若允许空值）
+            return false;          // 可根据业务需要改为 true（若允许空值）
         }
         try {
             MAPPER.readTree(json);
-            return true;
-        } catch (JsonProcessingException e) {
             return false;
+        } catch (JsonProcessingException e) {
+            return true;
         }
     }
 
@@ -37,7 +36,7 @@ public final class JsonValidator {
      * @throws BusinessException 当格式非法时抛出
      */
     public static void validateJson(String json) throws BusinessException {
-        if (!isValidJson(json)) {
+        if (isValidJson(json)) {
             throw new BusinessException("json格式不合法");
         }
     }

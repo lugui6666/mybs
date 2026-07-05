@@ -73,7 +73,7 @@ public class HoneypotTypeController {
         if (existing == null) {
             throw new BusinessException(ResultCode.HP_TYPE_NOT_FOUND);
         }
-        if (!JsonValidator.isValidJson(type.getConfig())) {
+        if (JsonValidator.isValidJson(type.getConfig())) {
             throw new BusinessException(ResultCode.HP_TYPE_CONFIG_ERROR);
         }
         type.setId(id);

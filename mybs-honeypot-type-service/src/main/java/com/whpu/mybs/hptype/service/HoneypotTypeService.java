@@ -60,7 +60,7 @@ public class HoneypotTypeService extends ServiceImpl<HoneypotTypeMapper, Honeypo
         type.setImageId("img-" + UUID.randomUUID().toString().substring(0, 8));
 
         // 使用Jackson库检查config的json格式是否合法
-        if (!JsonValidator.isValidJson(type.getConfig())) {
+        if (JsonValidator.isValidJson(type.getConfig())) {
             throw new BusinessException(ResultCode.HP_TYPE_CONFIG_ERROR);
         }
         type.setTypeName(request.getTypeName());
