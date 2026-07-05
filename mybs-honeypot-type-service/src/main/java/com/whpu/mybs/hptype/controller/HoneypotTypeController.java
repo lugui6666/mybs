@@ -28,9 +28,11 @@ public class HoneypotTypeController {
      * 分页查询
      */
     @GetMapping("/page")
-    public R<PageResult<HoneypotType>> page(@RequestParam(defaultValue = "1") Long page,
-                                             @RequestParam(defaultValue = "10") Long size,
-                                             @RequestParam(required = false) String keyword) {
+    public R<PageResult<HoneypotType>> page(
+            @RequestParam(name = "page", defaultValue = "1") Long page,
+            @RequestParam(name = "size", defaultValue = "10") Long size,
+            @RequestParam(name = "keyword", required = false) String keyword
+    )  {
         Page<HoneypotType> pageResult = typeService.page(new Page<>(page, size), keyword);
         return R.ok(PageResult.of(pageResult.getRecords(), pageResult.getTotal(), page, size));
     }
@@ -43,17 +45,6 @@ public class HoneypotTypeController {
         return R.ok(typeService.listAll());
     }
 
-    /**
-     * 查询详情
-     */
-    @GetMapping("/{id}")
-    public R<HoneypotType> getById(@PathVariable Long id) {
-        HoneypotType type = typeService.getById(id);
-        if (type == null) {
-            throw new BusinessException(ResultCode.HP_TYPE_NOT_FOUND);
-        }
-        return R.ok(type);
-    }
 
     /**
      * 新增类型
