@@ -6,6 +6,7 @@ import com.whpu.mybs.common.dto.R;
 import com.whpu.mybs.common.enums.ResultCode;
 import com.whpu.mybs.common.exception.BusinessException;
 import com.whpu.mybs.common.utils.JsonValidator;
+import com.whpu.mybs.hptype.dto.CreateTypeRequest;
 import com.whpu.mybs.hptype.entity.HoneypotType;
 import com.whpu.mybs.hptype.service.HoneypotTypeService;
 import lombok.RequiredArgsConstructor;
@@ -58,9 +59,8 @@ public class HoneypotTypeController {
      * 新增类型
      */
     @PostMapping
-    public R<Void> create(@RequestBody HoneypotType type) {
-        type.setId(null);
-        typeService.createType(type);
+    public R<Void> create(@RequestBody CreateTypeRequest request) {
+        typeService.createType(request);
         return R.ok("新增蜜罐类型成功");
     }
 

@@ -21,7 +21,7 @@ public final class JsonValidator {
      */
     public static boolean isValidJson(String json) {
         if (json == null || json.trim().isEmpty()) {
-            return false;          // 可根据业务需要改为 true（若允许空值）
+            return true;          // 可根据业务需要改为 true（若允许空值）
         }
         try {
             MAPPER.readTree(json);
