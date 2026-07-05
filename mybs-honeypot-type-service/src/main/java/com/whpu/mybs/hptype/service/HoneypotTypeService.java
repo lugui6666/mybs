@@ -7,6 +7,7 @@ import com.whpu.mybs.common.enums.ResultCode;
 import com.whpu.mybs.common.exception.BusinessException;
 import com.whpu.mybs.common.utils.JsonValidator;
 import com.whpu.mybs.hptype.dto.CreateTypeRequest;
+import com.whpu.mybs.hptype.dto.UpdateTypeRequest;
 import com.whpu.mybs.hptype.entity.HoneypotType;
 import com.whpu.mybs.hptype.mapper.HoneypotTypeMapper;
 import lombok.RequiredArgsConstructor;
@@ -71,5 +72,18 @@ public class HoneypotTypeService extends ServiceImpl<HoneypotTypeMapper, Honeypo
         type.setMinMemory(request.getMinMemory());
         type.setMinDisk(request.getMinDisk());
         typeMapper.insert(type);
+    }
+
+    public void updateType(Long id, UpdateTypeRequest request) {
+        HoneypotType type = new HoneypotType();
+        type.setId(id);
+        type.setTypeName(request.getImageName());
+        type.setImageId("img-" + UUID.randomUUID().toString().substring(0, 8));
+        type.setConfig(request.getConfig());
+        type.setDescription(request.getDescription());
+        type.setMinCpu(request.getMinCpu());
+        type.setMinMemory(request.getMinMemory());
+        type.setMinDisk(request.getMinDisk());
+        typeMapper.updateById(type);
     }
 }

@@ -7,6 +7,7 @@ import com.whpu.mybs.common.enums.ResultCode;
 import com.whpu.mybs.common.exception.BusinessException;
 import com.whpu.mybs.common.utils.JsonValidator;
 import com.whpu.mybs.hptype.dto.CreateTypeRequest;
+import com.whpu.mybs.hptype.dto.UpdateTypeRequest;
 import com.whpu.mybs.hptype.entity.HoneypotType;
 import com.whpu.mybs.hptype.service.HoneypotTypeService;
 import lombok.RequiredArgsConstructor;
@@ -59,16 +60,15 @@ public class HoneypotTypeController {
      * 更新类型
      */
     @PutMapping("/{id}")
-    public R<Void> update(@PathVariable Long id, @RequestBody HoneypotType type) {
+    public R<Void> update(@PathVariable Long id, @RequestBody UpdateTypeRequest request) {
         HoneypotType existing = typeService.getById(id);
         if (existing == null) {
             throw new BusinessException(ResultCode.HP_TYPE_NOT_FOUND);
         }
-        if (JsonValidator.isValidJson(type.getConfig())) {
+        if (JsonValidator.isValidJson(request.getConfig())) {
             throw new BusinessException(ResultCode.HP_TYPE_CONFIG_ERROR);
         }
-        type.setId(id);
-        typeService.updateById(type);
+        typeService.updateType(id, request);
         return R.ok("更新蜜罐类型成功");
     }
 
