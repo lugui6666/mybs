@@ -13,6 +13,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import java.util.List;
+import java.util.UUID;
 
 /**
  * 蜜罐类型服务
@@ -50,13 +51,9 @@ public class HoneypotTypeService extends ServiceImpl<HoneypotTypeMapper, Honeypo
      * 新增
      */
     public void createType(HoneypotType type) {
-        // 检查编码唯一性
-        LambdaQueryWrapper<HoneypotType> wrapper = new LambdaQueryWrapper<>();
-        wrapper.eq(HoneypotType::getTypeUuid, type.getTypeUuid());
-        if (typeMapper.selectCount(wrapper) > 0) {
-            throw new BusinessException(ResultCode.HP_TYPE_UUID_EXISTS);
-        }
-        //使用Jackson库检查config的json格式是否合法
+        // 生成唯一的uuid设置给type
+        type.setTypeUuid(UUID.randomUUID().toString());
+        // 使用Jackson库检查config的json格式是否合法
         if (!JsonValidator.isValidJson(type.getConfig())) {
             throw new BusinessException(ResultCode.HP_TYPE_CONFIG_ERROR);
         }
