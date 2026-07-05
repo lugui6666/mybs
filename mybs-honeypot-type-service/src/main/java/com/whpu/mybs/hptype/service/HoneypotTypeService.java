@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.whpu.mybs.common.enums.ResultCode;
 import com.whpu.mybs.common.exception.BusinessException;
+import com.whpu.mybs.common.utils.JsonValidator;
 import com.whpu.mybs.hptype.entity.HoneypotType;
 import com.whpu.mybs.hptype.mapper.HoneypotTypeMapper;
 import lombok.RequiredArgsConstructor;
@@ -30,7 +31,7 @@ public class HoneypotTypeService extends ServiceImpl<HoneypotTypeMapper, Honeypo
         if (StringUtils.hasText(keyword)) {
             wrapper.like(HoneypotType::getTypeName, keyword)
                     .or()
-                    .like(HoneypotType::getTypeCode, keyword);
+                    .like(HoneypotType::getTypeUuid, keyword);
         }
         wrapper.orderByDesc(HoneypotType::getCreateTime);
         return typeMapper.selectPage(page, wrapper);
@@ -41,8 +42,7 @@ public class HoneypotTypeService extends ServiceImpl<HoneypotTypeMapper, Honeypo
      */
     public List<HoneypotType> listAll() {
         LambdaQueryWrapper<HoneypotType> wrapper = new LambdaQueryWrapper<>();
-        wrapper.eq(HoneypotType::getEnabled, 1)
-                .orderByDesc(HoneypotType::getCreateTime);
+        wrapper.orderByDesc(HoneypotType::getCreateTime);
         return typeMapper.selectList(wrapper);
     }
 
@@ -52,11 +52,14 @@ public class HoneypotTypeService extends ServiceImpl<HoneypotTypeMapper, Honeypo
     public void createType(HoneypotType type) {
         // 检查编码唯一性
         LambdaQueryWrapper<HoneypotType> wrapper = new LambdaQueryWrapper<>();
-        wrapper.eq(HoneypotType::getTypeCode, type.getTypeCode());
+        wrapper.eq(HoneypotType::getTypeUuid, type.getTypeUuid());
         if (typeMapper.selectCount(wrapper) > 0) {
-            throw new BusinessException(ResultCode.HP_TYPE_CODE_EXISTS);
+            throw new BusinessException(ResultCode.HP_TYPE_UUID_EXISTS);
+        }
+        //使用Jackson库检查config的json格式是否合法
+        if (!JsonValidator.isValidJson(type.getConfig())) {
+            throw new BusinessException(ResultCode.HP_TYPE_CONFIG_ERROR);
         }
         typeMapper.insert(type);
     }
-
 }

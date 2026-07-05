@@ -5,6 +5,7 @@ import com.whpu.mybs.common.dto.PageResult;
 import com.whpu.mybs.common.dto.R;
 import com.whpu.mybs.common.enums.ResultCode;
 import com.whpu.mybs.common.exception.BusinessException;
+import com.whpu.mybs.common.utils.JsonValidator;
 import com.whpu.mybs.hptype.entity.HoneypotType;
 import com.whpu.mybs.hptype.service.HoneypotTypeService;
 import lombok.RequiredArgsConstructor;
@@ -71,6 +72,9 @@ public class HoneypotTypeController {
         HoneypotType existing = typeService.getById(id);
         if (existing == null) {
             throw new BusinessException(ResultCode.HP_TYPE_NOT_FOUND);
+        }
+        if (!JsonValidator.isValidJson(type.getConfig())) {
+            throw new BusinessException(ResultCode.HP_TYPE_CONFIG_ERROR);
         }
         type.setId(id);
         typeService.updateById(type);

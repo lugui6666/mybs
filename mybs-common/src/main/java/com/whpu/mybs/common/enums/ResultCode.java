@@ -34,7 +34,8 @@ public enum ResultCode {
 
     // 蜜罐类型
     HP_TYPE_NOT_FOUND(4043, "蜜罐类型不存在"),
-    HP_TYPE_CODE_EXISTS(4093, "蜜罐类型编码已存在"),
+    HP_TYPE_UUID_EXISTS(4093, "蜜罐类型编码已存在"),
+    HP_TYPE_CONFIG_ERROR(4094, "蜜罐类型配置不合法"),
 
     // 蜜罐实例
     HP_INSTANCE_NOT_FOUND(4044, "蜜罐实例不存在"),

@@ -13,25 +13,31 @@ import lombok.EqualsAndHashCode;
 @TableName("tb_honeypot_type")
 public class HoneypotType extends BaseEntity {
 
-    /** 类型名称 (如 "SSH 蜜罐") */
+    /** 类型UUID */
+    private String typeUuid;
+
+    /** 类型名称 (如 "SSH", "HTTP") */
     private String typeName;
 
-    /** 类型编码 (如 "SSH", "HTTP") */
-    private String typeCode;
+    /** 镜像名称 (如 "mysql_26.7.1") */
+    private String imageName;
 
-    /** 协议 (HTTP, SSH, MySQL, Redis, FTP, ...) */
-    private String protocol;
+    /** 镜像ID */
+    private String imageId;
 
-    /** 默认端口 */
-    private Integer defaultPort;
+    /** 配置信息 */
+    private String config;
 
     /** 描述 */
     private String description;
 
-    /** 图标 */
-    private String icon;
+    /** 最小cpu核数 */
+    private Integer minCpu;
 
-    /** 是否启用: 1=启用, 0=禁用 */
-    private Integer enabled;
+    /** 最小内存大小 */
+    private Integer minMemory;
+
+    /** 最小磁盘大小 */
+    private Integer minDisk;
 
 }
