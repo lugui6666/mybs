@@ -46,6 +46,14 @@ public class HoneypotTypeController {
         return R.ok(typeService.listAll());
     }
 
+    /**
+     * 获取类型详情
+     */
+    @GetMapping("/{id}")
+    public R<HoneypotType> get(@PathVariable Long id) {
+        return R.ok(typeService.getById(id));
+    }
+
 
     /**
      * 新增类型
