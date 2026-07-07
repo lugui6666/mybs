@@ -67,6 +67,8 @@ public class DockerDeployService {
 
     private final Set<String> allocatedIps = ConcurrentHashMap.newKeySet();
 
+    private final HoneypotInstanceService instanceService;
+
     /**
      * 启动一个真实的虚拟机实例
      * 步骤：创建目录 → 创建差异磁盘 → 启动 QEMU → 等待启动 → SSH 执行 docker compose
@@ -101,6 +103,7 @@ public class DockerDeployService {
 
             // 3. 计算 SSH 端口映射（宿主机端口 22000+id → 虚拟机 22）
             int sshHostPort = 22000 + id.intValue();
+            instance.setPort(sshHostPort);
 
             // 4. 构建并执行 QEMU 启动命令（多播 + 用户模式双网卡）
             String qemuCmd = buildQemuCommand(
@@ -158,6 +161,74 @@ public class DockerDeployService {
             log.error("实例 {} 部署失败", instanceId, e);
             throw e; // 抛出给调用方处理清理
         }
+    }
+
+    /**
+     * 停止虚拟机实例（通过 SSH 发送 poweroff，优雅关机）
+     */
+    public void stopVm(HoneypotInstance instance) throws Exception {
+        Long id = instance.getId();
+        String instanceId = id.toString();
+        int sshPort = instance.getPort();
+
+        log.info("开始停止虚拟机实例: {} (SSH端口: {})", instanceId, sshPort);
+
+        // 1. 通过 SSH 发送 poweroff 命令
+        String shutdownCmd = String.format(
+                "sshpass -p '%s' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -p %d root@localhost 'poweroff'",
+                vmPassword, sshPort
+        );
+
+        try {
+            // 执行关机命令（忽略返回码，因为 SSH 可能在关机过程中断开）
+            executeWsl(shutdownCmd);
+        } catch (Exception e) {
+            // 关机命令可能导致 SSH 连接提前断开，这里不视为致命错误
+            log.warn("执行 poweroff 命令时 SSH 连接已断开（正常情况）: {}", e.getMessage());
+        }
+
+        // 2. 等待 QEMU 进程退出（最多等待 30 秒）
+        boolean stopped = false;
+        for (int i = 0; i < 30; i++) {
+            // 检查 PID 文件是否还存在
+            String checkCmd = String.format(
+                    "if [ -f /tmp/qemu-%s.pid ]; then kill -0 $(cat /tmp/qemu-%s.pid) 2>/dev/null; else exit 1; fi",
+                    instanceId, instanceId
+            );
+            try {
+                executeWsl(checkCmd);
+                // 进程还在，继续等待
+                log.debug("等待 QEMU 进程退出... {}s", i + 1);
+                TimeUnit.SECONDS.sleep(1);
+            } catch (Exception e) {
+                // 进程已退出或 PID 文件已删除
+                stopped = true;
+                break;
+            }
+        }
+
+        // 3. 如果 30 秒后仍未停止，强制 kill
+        if (!stopped) {
+            log.warn("虚拟机 {} 未在 30 秒内优雅关闭，执行强制 kill", instanceId);
+            String forceKillCmd = String.format(
+                    "pkill -F /tmp/qemu-%s.pid 2>/dev/null || pkill -f 'qemu-system.*%s' 2>/dev/null || true",
+                    instanceId, instanceId
+            );
+            executeWsl(forceKillCmd);
+        }
+
+        // 4. 清理辅助文件（PID、Monitor Socket、日志）
+        String cleanCmd = String.format(
+                "rm -f /tmp/qemu-%s.pid /tmp/qemu-%s-monitor.sock /tmp/qemu-%s.log",
+                instanceId, instanceId, instanceId
+        );
+        executeWsl(cleanCmd);
+
+        if (instance.getIpAddress() != null && !instance.getIpAddress().isEmpty()) {
+            freeIp(instance.getIpAddress());
+        }
+
+        log.info("虚拟机实例 {} 已停止，资源已释放", instanceId);
     }
 
     // ======================= 构建 QEMU 命令 =======================

@@ -29,4 +29,16 @@ public class RabbitMQConfig {
                 .to(deployExchange)
                 .with(MqConstants.DEPLOY_ROUTING_KEY);
     }
+
+    @Bean
+    public Queue stopQueue() {
+        return new Queue(MqConstants.STOP_QUEUE, true); // 持久化
+    }
+
+    @Bean
+    public Binding stopBinding(Queue stopQueue, DirectExchange deployExchange) {
+        return BindingBuilder.bind(stopQueue)
+                .to(deployExchange)
+                .with(MqConstants.STOP_ROUTING_KEY);
+    }
 }

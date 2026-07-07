@@ -1,16 +1,19 @@
 package com.whpu.mybs.hpinstance.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.whpu.mybs.common.constant.MqConstants;
 import com.whpu.mybs.common.enums.InstanceStatus;
 import com.whpu.mybs.common.enums.ResultCode;
 import com.whpu.mybs.common.exception.BusinessException;
+import com.whpu.mybs.common.utils.UserContext;
 import com.whpu.mybs.hpinstance.dto.DeployHoneypotInstanceRequest;
 import com.whpu.mybs.hpinstance.entity.HoneypotInstance;
 import com.whpu.mybs.hpinstance.mapper.HoneypotInstanceMapper;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -22,6 +25,7 @@ import java.time.LocalDateTime;
 /**
  * 蜜罐实例服务
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class HoneypotInstanceService extends ServiceImpl<HoneypotInstanceMapper, HoneypotInstance> {
@@ -55,7 +59,9 @@ public class HoneypotInstanceService extends ServiceImpl<HoneypotInstanceMapper,
     @Transactional
     public void deploy(DeployHoneypotInstanceRequest request) {
         HoneypotInstance instance = new HoneypotInstance();
+        Long userId =UserContext.getUserId();
         // 1. 数据库插入，状态为"DEPLOYING"
+        instance.setCreateUserId(userId);
         instance.setStatus(InstanceStatus.DEPLOYING.getCode());
         instance.setInstanceName(request.getInstanceName());
         instance.setTypeId(request.getTypeId());
@@ -93,8 +99,10 @@ public class HoneypotInstanceService extends ServiceImpl<HoneypotInstanceMapper,
         if (!InstanceStatus.RUNNING.getCode().equals(instance.getStatus())) {
             throw new BusinessException(ResultCode.HP_INSTANCE_STATUS_ERROR.getCode(), "实例未在运行中，无法停止");
         }
-        instance.setStatus(InstanceStatus.STOPPED.getCode());
-        instanceMapper.updateById(instance);
+
+        // 发送停止消息（只传 ID）
+        rabbitTemplate.convertAndSend(MqConstants.DEPLOY_EXCHANGE, MqConstants.STOP_ROUTING_KEY, id);
+        log.info("已发送停止实例 {} 的消息到队列", id);
     }
 
     /**
@@ -115,9 +123,21 @@ public class HoneypotInstanceService extends ServiceImpl<HoneypotInstanceMapper,
         return instance;
     }
 
+    @Transactional
     public void updateStatus(Long id, String code) {
         HoneypotInstance instance = getAndCheck(id);
         instance.setStatus(code);
         instanceMapper.updateById(instance);
+    }
+
+    @Transactional
+    public void updateDeployOrStopSuccess(Long id, String ip, Integer sshPort, String code) {
+        LambdaUpdateWrapper<HoneypotInstance> wrapper = new LambdaUpdateWrapper<>();
+        wrapper.eq(HoneypotInstance::getId, id)
+                .set(HoneypotInstance::getIpAddress, ip)
+                .set(HoneypotInstance::getPort, sshPort)
+                .set(HoneypotInstance::getLastHeartbeat, LocalDateTime.now())
+                .set(HoneypotInstance::getStatus, code);
+        instanceMapper.update(null, wrapper);
     }
 }

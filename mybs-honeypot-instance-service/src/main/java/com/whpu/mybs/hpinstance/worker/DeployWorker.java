@@ -36,7 +36,12 @@ public class DeployWorker {
             dockerDeployService.startRealInstance(instance);
 
             // 3. 部署成功，更新数据库状态为 "RUNNING"
-            instanceService.updateStatus(instance.getId(), InstanceStatus.RUNNING.getCode());
+            instanceService.updateDeployOrStopSuccess(
+                    instance.getId(),
+                    instance.getIpAddress(),
+                    instance.getPort(),
+                    InstanceStatus.RUNNING.getCode()
+            );
         } catch (Exception e) {
             // 4. 部署失败，更新状态为 "ERROR"，并执行补偿清理
             log.error("部署失败，instanceId: {}", instanceId, e);
