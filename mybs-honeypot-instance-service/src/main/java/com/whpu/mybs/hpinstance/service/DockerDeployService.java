@@ -67,11 +67,13 @@ public class DockerDeployService {
 
     private final Set<String> allocatedIps = ConcurrentHashMap.newKeySet();
 
+    private final Set<Integer> allocatedPorts = ConcurrentHashMap.newKeySet();
+
     private final HoneypotInstanceService instanceService;
 
     /**
-     * 启动一个真实的虚拟机实例
-     * 步骤：创建目录 → 创建差异磁盘 → 启动 QEMU → 等待启动 → SSH 执行 docker compose
+     * 部署或启动实例（智能判断：若镜像不存在则克隆，否则直接启动）
+     * 适用于首次部署和停止后重新启动
      *
      * @param instance 实例实体（包含 id, cpu, memory 等；部署成功后需由调用方更新 IP 和状态）
      * @throws Exception 任何步骤失败都会抛出异常，由调用方（Worker）触发清理
@@ -80,87 +82,151 @@ public class DockerDeployService {
         Long id = instance.getId();
         String instanceId = id.toString();
         String instanceDir = instanceBasePath + "/" + instanceId;
-        String targetInstancePath = instanceDir + "/disk.qcow2";
+        String targetImagePath = instanceDir + "/disk.qcow2";
 
-        // 使用HoneypotTypeFeignClient的getByTypeId方法获取类型
+        // 1. 确保镜像存在（不存在则克隆）
+        ensureImageExists(instance, targetImagePath);
+
+        // 2. 分配资源（端口和IP）
+        int sshPort = allocatePort(id.intValue());
+        String vmIp = allocateIp();
+        instance.setPort(sshPort);
+        instance.setIpAddress(vmIp);
+
+        try {
+            // 3. 获取类型配置（用于CPU/内存）
+            R<HoneypotTypeDTO> response = honeypotTypeFeignClient.getByTypeId(instance.getTypeId());
+            HoneypotTypeDTO typeDTO = response.getData();
+            int cpuCores = typeDTO.getMinCpu();
+            int memoryMb = typeDTO.getMinMemory();
+
+            // 4. 启动 QEMU
+            String qemuCmd = buildQemuCommand(targetImagePath, sshPort, cpuCores, memoryMb, instance);
+            log.info("启动 QEMU，命令: {}", qemuCmd);
+            executeWsl(qemuCmd);
+
+            // 5. 等待 SSH 就绪
+            waitForSshReady(sshPort);
+
+            // 6. 配置虚拟机网络（多播网卡 IP）
+            configureVmNetwork(sshPort, vmIp);
+
+            // 7. （可选）获取实际 IP 以确认
+            String actualIp = getVmIp(sshPort);
+            if (actualIp != null && !actualIp.isEmpty()) {
+                instance.setIpAddress(actualIp);
+                log.info("虚拟机 IP 确认: {}", actualIp);
+            } else {
+                log.warn("未获取到 eth1 IP，但已配置，使用分配的 IP: {}", vmIp);
+            }
+
+            // 8. （可选）在虚拟机内启动 MySQL
+            // startMysqlInVm(sshPort);
+
+            log.info("实例 {} 启动成功", instanceId);
+
+        } catch (Exception e) {
+            // 失败时释放已分配的资源
+            freePort(sshPort);
+            freeIp(vmIp);
+            log.error("实例 {} 启动失败，已释放资源", instanceId, e);
+            throw e;
+        }
+    }
+
+    /**
+     * 检查差异磁盘是否存在，若不存在则从基础镜像克隆
+     */
+    private void ensureImageExists(HoneypotInstance instance, String targetImagePath) throws Exception {
+        String instanceId = instance.getId().toString();
+        String instanceDir = targetImagePath.substring(0, targetImagePath.lastIndexOf('/'));
+
+        // 检查目标镜像是否存在
+        String checkCmd = "test -f " + targetImagePath;
+        try {
+            executeWsl(checkCmd);
+            log.info("实例 {} 的镜像已存在: {}", instanceId, targetImagePath);
+            return; // 存在，直接返回
+        } catch (Exception e) {
+            log.info("实例 {} 的镜像不存在，开始克隆", instanceId);
+        }
+
+        // 获取基础镜像路径
         R<HoneypotTypeDTO> response = honeypotTypeFeignClient.getByTypeId(instance.getTypeId());
         HoneypotTypeDTO typeDTO = response.getData();
         String imageName = typeDTO.getImageName();
-        String imagePath = baseImagePath + "/" + imageName + ".qcow2";
+        String baseImagePath = this.baseImagePath + "/" + imageName + ".qcow2";
 
-        try {
-            // 1. 创建实例目录
-            log.info("创建实例目录: {}", instanceDir);
-            executeWsl("mkdir -p " + instanceDir);
+        // 创建实例目录
+        executeWsl("mkdir -p " + instanceDir);
 
-            // 2. 创建差异磁盘（基于基础镜像，瞬间完成）
-            log.info("基于基础镜像 {} 创建差异磁盘 {}", imagePath, targetInstancePath);
-            String createCmd = String.format(
-                    "qemu-img create -f qcow2 -b %s -F qcow2 %s",
-                    imagePath, targetInstancePath
-            );
-            executeWsl(createCmd);
+        // 创建差异磁盘
+        String createCmd = String.format(
+                "qemu-img create -f qcow2 -b %s -F qcow2 %s",
+                baseImagePath, targetImagePath
+        );
+        executeWsl(createCmd);
+        log.info("差异磁盘创建成功: {}", targetImagePath);
+    }
 
-            // 3. 计算 SSH 端口映射（宿主机端口 22000+id → 虚拟机 22）
-            int sshHostPort = 22000 + id.intValue();
-            instance.setPort(sshHostPort);
-
-            // 4. 构建并执行 QEMU 启动命令（多播 + 用户模式双网卡）
-            String qemuCmd = buildQemuCommand(
-                    targetInstancePath,
-                    sshHostPort,
-                    typeDTO.getMinCpu(),
-                    typeDTO.getMinMemory(),
-                    instance
-            );
-            log.info("启动 QEMU 虚拟机，命令: {}", qemuCmd);
-            executeWsl(qemuCmd);
-
-            // 5.等待 SSH 服务就绪（最多尝试 30 次，每次间隔 2 秒）
-            log.info("等待 SSH 服务就绪...");
-            String sshCmd = String.format(
-                    "sshpass -p '%s' ssh -o StrictHostKeyChecking=no -p %d root@localhost 'echo ready'",
-                    vmPassword, sshHostPort
-            );
-            boolean sshReady = false;
-            for (int i = 0; i < 30; i++) {
-                try {
-                    String result = executeWsl(sshCmd);
-                    if ("ready".equals(result.trim())) {
-                        sshReady = true;
-                        break;
-                    }
-                } catch (Exception e) {
-                    log.debug("SSH 未就绪，第 {} 次尝试...", i + 1);
-                }
-                TimeUnit.SECONDS.sleep(2);
+    /**
+     * 分配端口（基于基端口 + 偏移量）
+     */
+    private int allocatePort(int offset) {
+        int port = 22000 + offset;
+        synchronized (allocatedPorts) {
+            if (allocatedPorts.contains(port)) {
+                throw new RuntimeException("端口 " + port + " 已被占用");
             }
-            if (!sshReady) {
-                throw new RuntimeException("SSH 服务在超时时间内未就绪");
-            }
-            log.info("SSH 服务已就绪");
-
-            // 分配 IP（从池中）
-            String vmIp = allocateIp();
-            instance.setIpAddress(vmIp);
-
-            // 配置网络
-            configureVmNetwork(sshHostPort, vmIp);
-
-            // 获取实际 IP（可能因网卡名不同，但 eth1 应已存在）
-            String actualIp = getVmIp(sshHostPort);
-            if (actualIp != null && !actualIp.isEmpty()) {
-                instance.setIpAddress(actualIp);   // 更新为实际 IP（可能与分配的一致）
-                log.info("虚拟机 IP 确认: {}", actualIp);
-            } else {
-                log.warn("未能获取到 eth1 IP，但已配置，请检查网络");
-                // 仍使用分配的 IP
-            }
-
-        } catch (Exception e) {
-            log.error("实例 {} 部署失败", instanceId, e);
-            throw e; // 抛出给调用方处理清理
+            allocatedPorts.add(port);
+            return port;
         }
+    }
+
+    /**
+     * 释放端口
+     */
+    private void freePort(int port) {
+        allocatedPorts.remove(port);
+    }
+
+    /**
+     * 等待虚拟机 SSH 服务就绪（最多 60 秒）
+     */
+    private void waitForSshReady(int sshPort) throws Exception {
+        String sshCmd = String.format(
+                "sshpass -p '%s' ssh -o StrictHostKeyChecking=no -p %d root@localhost 'echo ready'",
+                vmPassword, sshPort
+        );
+        boolean ready = false;
+        for (int i = 0; i < 30; i++) {
+            try {
+                String result = executeWsl(sshCmd);
+                if ("ready".equals(result.trim())) {
+                    ready = true;
+                    break;
+                }
+            } catch (Exception e) {
+                log.debug("SSH 未就绪，第 {} 次尝试...", i + 1);
+            }
+            TimeUnit.SECONDS.sleep(2);
+        }
+        if (!ready) {
+            throw new RuntimeException("SSH 服务在 60 秒内未就绪");
+        }
+        log.info("SSH 服务已就绪");
+    }
+
+    /**
+     * 在虚拟机内启动 MySQL 容器（docker compose up -d）
+     */
+    private void startMysqlInVm(int sshPort) throws Exception {
+        String cmd = String.format(
+                "sshpass -p '%s' ssh -o StrictHostKeyChecking=no -p %d root@localhost 'cd /app && docker compose up -d'",
+                vmPassword, sshPort
+        );
+        executeWsl(cmd);
+        log.info("MySQL 容器已启动");
     }
 
     /**

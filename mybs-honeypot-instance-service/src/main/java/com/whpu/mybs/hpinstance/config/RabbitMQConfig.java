@@ -24,7 +24,6 @@ public class RabbitMQConfig {
 
     @Bean
     public Binding binding(Queue deployQueue, DirectExchange deployExchange) {
-        // 这里的 with("deploy.routingkey") 必须与生产者的路由键一致！
         return BindingBuilder.bind(deployQueue)
                 .to(deployExchange)
                 .with(MqConstants.DEPLOY_ROUTING_KEY);
@@ -40,5 +39,17 @@ public class RabbitMQConfig {
         return BindingBuilder.bind(stopQueue)
                 .to(deployExchange)
                 .with(MqConstants.STOP_ROUTING_KEY);
+    }
+
+    @Bean
+    public Queue startQueue() {
+        return new Queue(MqConstants.START_QUEUE, true);
+    }
+
+    @Bean
+    public Binding startBinding(Queue startQueue, DirectExchange deployExchange) {
+        return BindingBuilder.bind(startQueue)
+                .to(deployExchange)
+                .with(MqConstants.START_ROUTING_KEY);
     }
 }

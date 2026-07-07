@@ -59,9 +59,8 @@ public class HoneypotInstanceService extends ServiceImpl<HoneypotInstanceMapper,
     @Transactional
     public void deploy(DeployHoneypotInstanceRequest request) {
         HoneypotInstance instance = new HoneypotInstance();
-        Long userId =UserContext.getUserId();
         // 1. 数据库插入，状态为"DEPLOYING"
-        instance.setCreateUserId(userId);
+        instance.setCreateUserId(UserContext.getUserId());
         instance.setStatus(InstanceStatus.DEPLOYING.getCode());
         instance.setInstanceName(request.getInstanceName());
         instance.setTypeId(request.getTypeId());
@@ -85,9 +84,9 @@ public class HoneypotInstanceService extends ServiceImpl<HoneypotInstanceMapper,
         if (InstanceStatus.RUNNING.getCode().equals(instance.getStatus())) {
             throw new BusinessException(ResultCode.HP_INSTANCE_STATUS_ERROR.getCode(), "实例已在运行中");
         }
-        instance.setStatus(InstanceStatus.RUNNING.getCode());
-        instance.setLastHeartbeat(LocalDateTime.now());
-        instanceMapper.updateById(instance);
+        // 发送启动消息
+        rabbitTemplate.convertAndSend(MqConstants.DEPLOY_EXCHANGE, MqConstants.START_ROUTING_KEY, id);
+        log.info("已发送启动实例 {} 的消息到队列", id);
     }
 
     /**
@@ -120,6 +119,8 @@ public class HoneypotInstanceService extends ServiceImpl<HoneypotInstanceMapper,
         if (instance == null) {
             throw new BusinessException(ResultCode.HP_INSTANCE_NOT_FOUND);
         }
+        if(!instance.getCreateUserId().equals(UserContext.getUserId()))
+            throw new BusinessException(ResultCode.UNAUTHORIZED);
         return instance;
     }
 
