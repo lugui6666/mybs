@@ -1,0 +1,370 @@
+package com.whpu.mybs.hpinstance.service;
+
+import com.whpu.mybs.common.dto.HoneypotTypeDTO;
+import com.whpu.mybs.common.dto.R;
+import com.whpu.mybs.hpinstance.entity.HoneypotInstance;
+import com.whpu.mybs.hpinstance.feign.HoneypotTypeFeignClient;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+
+import java.io.OutputStream;
+import java.net.Inet4Address;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.ConcurrentHashMap;
+
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
+
+
+/**
+ * Docker/QEMU 部署服务（负责启动和清理虚拟机实例）
+ * 采用 WSL 作为运行环境，使用 qemu-img 差异磁盘实现快速克隆，
+ * 通过多播网络实现虚拟机间二层互通。
+ */
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class DockerDeployService {
+
+    @Value("${deploy.wsl.distro:Ubuntu-22.04}")
+    private String wslDistro;    // WSL 发行版名称，如 Ubuntu
+
+    @Value("${deploy.image.source:/home/lugui/bs/images}")
+    private String baseImagePath;  // 基础镜像在 WSL 中的路径
+
+    @Value("${deploy.instance.base:/home/lugui/bs/instances}")
+    private String instanceBasePath; // 实例目录在 WSL 中的基础路径
+
+    @Value("${deploy.multicast.group:239.255.1.1}")
+    private String multicastGroup;         // 多播组地址
+
+    @Value("${deploy.multicast.port:1234}")
+    private int multicastPort;             // 多播端口
+
+    @Value("${deploy.subnet.prefix:192.168.100.}")
+    private String subnetPrefix;           // 多播子网前缀（虚拟机 IP 将存为 prefix + (100+id)）
+
+    @Value("${deploy.vm.ssh.password:123456}")
+    private String vmPassword;             // 虚拟机 root 密码（用于 SSH 执行 docker compose）
+
+    @Value("${deploy.timeout.seconds:300}")
+    private int timeoutSeconds;  // 命令执行超时时间
+
+    @Value("${deploy.ip.pool.start:192.168.100.10}")
+    private String ipPoolStart;
+
+    @Value("${deploy.ip.pool.end:192.168.100.250}")
+    private String ipPoolEnd;
+
+    private final HoneypotTypeFeignClient honeypotTypeFeignClient;
+
+    private final Set<String> allocatedIps = ConcurrentHashMap.newKeySet();
+
+    /**
+     * 启动一个真实的虚拟机实例
+     * 步骤：创建目录 → 创建差异磁盘 → 启动 QEMU → 等待启动 → SSH 执行 docker compose
+     *
+     * @param instance 实例实体（包含 id, cpu, memory 等；部署成功后需由调用方更新 IP 和状态）
+     * @throws Exception 任何步骤失败都会抛出异常，由调用方（Worker）触发清理
+     */
+    public void startRealInstance(HoneypotInstance instance) throws Exception {
+        Long id = instance.getId();
+        String instanceId = id.toString();
+        String instanceDir = instanceBasePath + "/" + instanceId;
+        String targetInstancePath = instanceDir + "/disk.qcow2";
+
+        // 使用HoneypotTypeFeignClient的getByTypeId方法获取类型
+        R<HoneypotTypeDTO> response = honeypotTypeFeignClient.getByTypeId(instance.getTypeId());
+        HoneypotTypeDTO typeDTO = response.getData();
+        String imageName = typeDTO.getImageName();
+        String imagePath = baseImagePath + "/" + imageName + ".qcow2";
+
+        try {
+            // 1. 创建实例目录
+            log.info("创建实例目录: {}", instanceDir);
+            executeWsl("mkdir -p " + instanceDir);
+
+            // 2. 创建差异磁盘（基于基础镜像，瞬间完成）
+            log.info("基于基础镜像 {} 创建差异磁盘 {}", imagePath, targetInstancePath);
+            String createCmd = String.format(
+                    "qemu-img create -f qcow2 -b %s -F qcow2 %s",
+                    imagePath, targetInstancePath
+            );
+            executeWsl(createCmd);
+
+            // 3. 计算 SSH 端口映射（宿主机端口 22000+id → 虚拟机 22）
+            int sshHostPort = 22000 + id.intValue();
+
+            // 4. 构建并执行 QEMU 启动命令（多播 + 用户模式双网卡）
+            String qemuCmd = buildQemuCommand(
+                    targetInstancePath,
+                    sshHostPort,
+                    typeDTO.getMinCpu(),
+                    typeDTO.getMinMemory(),
+                    instance
+            );
+            log.info("启动 QEMU 虚拟机，命令: {}", qemuCmd);
+            executeWsl(qemuCmd);
+
+            // 5.等待 SSH 服务就绪（最多尝试 30 次，每次间隔 2 秒）
+            log.info("等待 SSH 服务就绪...");
+            String sshCmd = String.format(
+                    "sshpass -p '%s' ssh -o StrictHostKeyChecking=no -p %d root@localhost 'echo ready'",
+                    vmPassword, sshHostPort
+            );
+            boolean sshReady = false;
+            for (int i = 0; i < 30; i++) {
+                try {
+                    String result = executeWsl(sshCmd);
+                    if ("ready".equals(result.trim())) {
+                        sshReady = true;
+                        break;
+                    }
+                } catch (Exception e) {
+                    log.debug("SSH 未就绪，第 {} 次尝试...", i + 1);
+                }
+                TimeUnit.SECONDS.sleep(2);
+            }
+            if (!sshReady) {
+                throw new RuntimeException("SSH 服务在超时时间内未就绪");
+            }
+            log.info("SSH 服务已就绪");
+
+            // 分配 IP（从池中）
+            String vmIp = allocateIp();
+            instance.setIpAddress(vmIp);
+
+            // 配置网络
+            configureVmNetwork(sshHostPort, vmIp);
+
+            // 获取实际 IP（可能因网卡名不同，但 eth1 应已存在）
+            String actualIp = getVmIp(sshHostPort);
+            if (actualIp != null && !actualIp.isEmpty()) {
+                instance.setIpAddress(actualIp);   // 更新为实际 IP（可能与分配的一致）
+                log.info("虚拟机 IP 确认: {}", actualIp);
+            } else {
+                log.warn("未能获取到 eth1 IP，但已配置，请检查网络");
+                // 仍使用分配的 IP
+            }
+
+        } catch (Exception e) {
+            log.error("实例 {} 部署失败", instanceId, e);
+            throw e; // 抛出给调用方处理清理
+        }
+    }
+
+    // ======================= 构建 QEMU 命令 =======================
+
+    /**
+     * 构建完整的 QEMU 启动命令（参考 Rust 实现）
+     * 包含双网卡（用户模式用于 SSH 管理，多播模式用于虚拟机间通信）、
+     * 监控 socket、串口日志、后台运行等。
+     *
+     * @param imagePath   差异磁盘路径
+     * @param sshHostPort 宿主机映射的 SSH 端口
+     * @param cpuCores    CPU 核数
+     * @param memoryMb    内存大小 (MB)
+     * @param instance    实例对象（用于获取 ID 等信息）
+     * @return 完整的 QEMU 命令行字符串
+     */
+    private String buildQemuCommand(String imagePath, int sshHostPort,
+                                    int cpuCores, int memoryMb, HoneypotInstance instance) {
+        Long id = instance.getId();
+        String instanceId = id.toString();
+        String vmName = "honeypot-" + instanceId;
+        String macAddr = generateMacAddress(id);                 // 多播网卡 MAC
+        String monitorSocket = "/tmp/qemu-" + instanceId + "-monitor.sock";
+        String serialLog = "/tmp/qemu-" + instanceId + ".log";
+
+        return String.format(
+                "qemu-system-x86_64 " +
+                        "-name '%s' " +
+                        "-m %dM " +
+                        "-smp cores=%d " +
+                        "-drive file='%s',format=qcow2,if=virtio " +
+                        // 网卡1：用户模式（用于 SSH 端口转发，方便管理）
+                        "-netdev user,id=n1,hostfwd=tcp::%d-:22 " +
+                        "-device e1000,netdev=n1 " +
+                        // 网卡2：多播 socket（虚拟机间二层互通）
+                        "-netdev socket,id=n2,mcast=%s:%d " +
+                        "-device e1000,netdev=n2,mac='%s' " +
+                        // 后台运行
+                        "-daemonize " +
+                        // 监控 socket（可执行 qemu-monitor 命令）
+                        "-monitor unix:%s,server,nowait " +
+                        // 串口日志（内核启动信息）
+                        "-serial file:%s " +
+                        "-pidfile /tmp/qemu-%s.pid",
+                vmName, memoryMb, cpuCores, imagePath,
+                sshHostPort,
+                multicastGroup, multicastPort,
+                macAddr,
+                monitorSocket, serialLog,
+                instanceId
+        );
+    }
+
+    /**
+     * 生成唯一的 MAC 地址（基于实例 ID）
+     * 使用 QEMU 官方推荐的 OUI 前缀 52:54:00
+     *
+     * @param id 实例 ID
+     * @return MAC 地址字符串 (如 52:54:00:12:34:56)
+     */
+    private String generateMacAddress(Long id) {
+        String hex = String.format("%06x", id.intValue() & 0xFFFFFF);
+        return "52:54:00:" +
+                hex.substring(0, 2) + ":" +
+                hex.substring(2, 4) + ":" +
+                hex.substring(4, 6);
+    }
+
+    /**
+     * 从 IP 池中分配一个可用的 IP（按顺序遍历，跳过已占用的）
+     */
+    private String allocateIp() throws UnknownHostException {
+        Inet4Address start = (Inet4Address) InetAddress.getByName(ipPoolStart);
+        Inet4Address end = (Inet4Address) InetAddress.getByName(ipPoolEnd);
+        int startInt = ByteBuffer.wrap(start.getAddress()).getInt();
+        int endInt = ByteBuffer.wrap(end.getAddress()).getInt();
+        if (startInt > endInt) {
+            throw new RuntimeException("IP 池起始地址大于结束地址");
+        }
+        synchronized (allocatedIps) {
+            for (int ipInt = startInt; ipInt <= endInt; ipInt++) {
+                byte[] bytes = ByteBuffer.allocate(4).putInt(ipInt).array();
+                String ip = InetAddress.getByAddress(bytes).getHostAddress();
+                if (!allocatedIps.contains(ip)) {
+                    allocatedIps.add(ip);
+                    return ip;
+                }
+            }
+            throw new RuntimeException("IP 池已耗尽");
+        }
+    }
+
+    /**
+     * 释放 IP 地址
+     */
+    private void freeIp(String ip) {
+        allocatedIps.remove(ip);
+    }
+
+    /**
+     * 通过 SSH 配置虚拟机 eth1 网卡的 IP
+     */
+    private void configureVmNetwork(int sshPort, String vmIp) throws Exception {
+        String cmd = String.format(
+                "sshpass -p '%s' ssh -o StrictHostKeyChecking=no -p %d root@localhost " +
+                        "'ip link set eth1 up && ip addr add %s/24 dev eth1'",
+                vmPassword, sshPort, vmIp
+        );
+        executeWsl(cmd);
+        log.info("已配置虚拟机 eth1 IP: {}", vmIp);
+    }
+
+    /**
+     * 通过 SSH 获取虚拟机的 eth1 IP（若未配置则返回空）
+     */
+    private String getVmIp(int sshPort) throws Exception {
+        String cmd = String.format(
+                "sshpass -p '%s' ssh -o StrictHostKeyChecking=no -p %d root@localhost " +
+                        "'ip -4 addr show eth1 | grep inet | awk \"{print \\$2}\" | cut -d/ -f1'",
+                vmPassword, sshPort
+        );
+        String ip = executeWsl(cmd);
+        if (ip.isEmpty()) {
+            return null;
+        }
+        return ip.trim();
+    }
+
+    // ======================= 清理失败实例 =======================
+
+    /**
+     * 清理因部署失败而残留的资源（QEMU 进程、磁盘文件、监控 socket、日志等）
+     *
+     * @param instance 要清理的实例（ID 必须有效）
+     */
+    public void cleanupFailedInstance(HoneypotInstance instance) {
+        Long id = instance.getId();
+        String instanceId = id.toString();
+        String instanceDir = instanceBasePath + "/" + instanceId;
+
+        try {
+            log.info("开始清理实例 {} 的资源", instanceId);
+
+            // 1. 强制杀死 QEMU 进程（通过 pidfile）
+            executeWsl("pkill -F /tmp/qemu-" + instanceId + ".pid 2>/dev/null || true");
+
+            // 2. 删除实例目录（包含差异磁盘）
+            executeWsl("rm -rf " + instanceDir);
+
+            // 3. 删除辅助文件（PID、监控 socket、串口日志）
+            executeWsl("rm -f /tmp/qemu-" + instanceId + ".pid");
+            executeWsl("rm -f /tmp/qemu-" + instanceId + "-monitor.sock");
+            executeWsl("rm -f /tmp/qemu-" + instanceId + ".log");
+
+            log.info("实例 {} 资源清理完成", instanceId);
+
+        } catch (Exception e) {
+            // 清理失败不应阻断流程，但需记录错误以便人工介入
+            log.error("清理实例 {} 过程中发生异常，可能需要手动处理", instanceId, e);
+        }
+    }
+
+    // ======================= WSL 命令执行工具 =======================
+
+    /**
+     * 在 WSL 中执行命令并返回标准输出（用于需要解析输出结果的场景）
+     *
+     * @param command 要执行的 bash 命令
+     * @return 命令的标准输出字符串（已 trim）
+     * @throws Exception 命令执行失败或超时
+     */
+    private String executeWsl(String command) throws Exception {
+        // 启动 wsl bash -s，从 stdin 读取命令
+        String[] cmdArray = {"cmd.exe", "/c", "wsl", "-d", wslDistro, "bash", "-s"};
+        ProcessBuilder pb = new ProcessBuilder(cmdArray);
+        pb.redirectErrorStream(true);
+        Process process = pb.start();
+
+        // 将命令写入 stdin
+        try (OutputStream os = process.getOutputStream()) {
+            os.write(command.getBytes(StandardCharsets.UTF_8));
+            os.write('\n');  // 命令以换行结束
+            os.flush();
+        }
+
+        // 读取输出
+        StringBuilder output = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                output.append(line).append("\n");
+            }
+        }
+
+        boolean finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
+        if (!finished) {
+            process.destroyForcibly();
+            throw new RuntimeException("命令执行超时: " + command);
+        }
+
+        int exitCode = process.exitValue();
+        if (exitCode != 0) {
+            throw new RuntimeException(String.format(
+                    "命令执行失败，退出码 %d，输出: %s", exitCode, output
+            ));
+        }
+        return output.toString().trim();
+    }
+}

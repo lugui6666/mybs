@@ -1,5 +1,6 @@
 package com.whpu.mybs.hpinstance.feign;
 
+import com.whpu.mybs.common.dto.HoneypotTypeDTO;
 import com.whpu.mybs.common.dto.R;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -19,6 +20,6 @@ public interface HoneypotTypeFeignClient {
      * 查询蜜罐类型详情
      */
     @GetMapping("/api/hp-type/{id}")
-    R<Map<String, Object>> getById(@PathVariable("id") Long id);
+    R<HoneypotTypeDTO> getByTypeId(@PathVariable Long id);
 
 }

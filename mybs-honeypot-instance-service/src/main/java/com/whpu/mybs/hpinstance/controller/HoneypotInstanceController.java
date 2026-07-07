@@ -5,6 +5,7 @@ import com.whpu.mybs.common.dto.PageResult;
 import com.whpu.mybs.common.dto.R;
 import com.whpu.mybs.common.enums.ResultCode;
 import com.whpu.mybs.common.exception.BusinessException;
+import com.whpu.mybs.hpinstance.dto.DeployHoneypotInstanceRequest;
 import com.whpu.mybs.hpinstance.entity.HoneypotInstance;
 import com.whpu.mybs.hpinstance.service.HoneypotInstanceService;
 import lombok.RequiredArgsConstructor;
@@ -50,9 +51,8 @@ public class HoneypotInstanceController {
      * 创建/部署实例
      */
     @PostMapping
-    public R<Void> deploy(@RequestBody HoneypotInstance instance) {
-        instance.setId(null);
-        instanceService.deploy(instance);
+    public R<Void> deploy(@RequestBody DeployHoneypotInstanceRequest request) {
+        instanceService.deploy(request);
         return R.ok("部署成功");
     }
 

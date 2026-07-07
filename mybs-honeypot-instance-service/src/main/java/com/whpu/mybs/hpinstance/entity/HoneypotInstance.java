@@ -24,7 +24,7 @@ public class HoneypotInstance extends BaseEntity {
     /** 部署 IP 地址 */
     private String ipAddress;
 
-    /** 运行端口 */
+    /** ssh端口 */
     private Integer port;
 
     /** 状态: deploying/running/stopped/error/destroyed */
@@ -32,15 +32,6 @@ public class HoneypotInstance extends BaseEntity {
 
     /** 描述 */
     private String description;
-
-    /** 扩展配置 (JSON) */
-    private String configJson;
-
-    /** 容器 ID */
-    private String containerId;
-
-    /** 部署时间 */
-    private LocalDateTime deployedAt;
 
     /** 最后心跳时间 */
     private LocalDateTime lastHeartbeat;
