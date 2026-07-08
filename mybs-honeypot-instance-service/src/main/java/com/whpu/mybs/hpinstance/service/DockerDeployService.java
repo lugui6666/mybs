@@ -7,26 +7,22 @@ import com.whpu.mybs.common.enums.InstanceStatus;
 import com.whpu.mybs.hpinstance.entity.HoneypotInstance;
 import com.whpu.mybs.hpinstance.feign.HoneypotTypeFeignClient;
 import com.whpu.mybs.hpinstance.mapper.HoneypotInstanceMapper;
+import com.whpu.mybs.hpinstance.utils.ExecuteWslUtil;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import java.io.OutputStream;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
@@ -41,8 +37,6 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class DockerDeployService {
 
-    @Value("${deploy.wsl.distro:Ubuntu-22.04}")
-    private String wslDistro;    // WSL 发行版名称，如 Ubuntu
 
     @Value("${deploy.image.source:/home/lugui/bs/images}")
     private String baseImagePath;  // 基础镜像在 WSL 中的路径
@@ -62,9 +56,6 @@ public class DockerDeployService {
     @Value("${deploy.vm.ssh.password:123456}")
     private String vmPassword;             // 虚拟机 root 密码（用于 SSH 执行 docker compose）
 
-    @Value("${deploy.timeout.seconds:300}")
-    private int timeoutSeconds;  // 命令执行超时时间
-
     @Value("${deploy.ip.pool.start:192.168.100.10}")
     private String ipPoolStart;
 
@@ -72,6 +63,10 @@ public class DockerDeployService {
     private String ipPoolEnd;
 
     private final HoneypotTypeFeignClient honeypotTypeFeignClient;
+
+    private final HealthCheckService healthCheckService;
+
+    private final ExecuteWslUtil executeWslUtil;
 
     private final Set<String> allocatedIps = ConcurrentHashMap.newKeySet();
 
@@ -111,7 +106,7 @@ public class DockerDeployService {
             // 4. 启动 QEMU
             String qemuCmd = buildQemuCommand(targetImagePath, sshPort, cpuCores, memoryMb, instance);
             log.info("启动 QEMU，命令: {}", qemuCmd);
-            executeWsl(qemuCmd);
+            executeWslUtil.executeWsl(qemuCmd);
 
             // 5. 等待 SSH 就绪
             waitForSshReady(sshPort);
@@ -152,7 +147,7 @@ public class DockerDeployService {
         // 检查目标镜像是否存在
         String checkCmd = "test -f " + targetImagePath;
         try {
-            executeWsl(checkCmd);
+            executeWslUtil.executeWsl(checkCmd);
             log.info("实例 {} 的镜像已存在: {}", instanceId, targetImagePath);
             return; // 存在，直接返回
         } catch (Exception e) {
@@ -166,14 +161,14 @@ public class DockerDeployService {
         String baseImagePath = this.baseImagePath + "/" + imageName + ".qcow2";
 
         // 创建实例目录
-        executeWsl("mkdir -p " + instanceDir);
+        executeWslUtil.executeWsl("mkdir -p " + instanceDir);
 
         // 创建差异磁盘
         String createCmd = String.format(
                 "qemu-img create -f qcow2 -b %s -F qcow2 %s",
                 baseImagePath, targetImagePath
         );
-        executeWsl(createCmd);
+        executeWslUtil.executeWsl(createCmd);
         log.info("差异磁盘创建成功: {}", targetImagePath);
     }
 
@@ -209,7 +204,7 @@ public class DockerDeployService {
         boolean ready = false;
         for (int i = 0; i < 30; i++) {
             try {
-                String result = executeWsl(sshCmd);
+                String result = executeWslUtil.executeWsl(sshCmd);
                 if ("ready".equals(result.trim())) {
                     ready = true;
                     break;
@@ -233,7 +228,7 @@ public class DockerDeployService {
                 "sshpass -p '%s' ssh -o StrictHostKeyChecking=no -p %d root@localhost 'docker compose up -d'",
                 vmPassword, sshPort
         );
-        executeWsl(cmd);
+        executeWslUtil.executeWsl(cmd);
         log.info("MySQL 容器已启动");
     }
 
@@ -255,7 +250,7 @@ public class DockerDeployService {
 
         try {
             // 执行关机命令（忽略返回码，因为 SSH 可能在关机过程中断开）
-            executeWsl(shutdownCmd);
+            executeWslUtil.executeWsl(shutdownCmd);
         } catch (Exception e) {
             // 关机命令可能导致 SSH 连接提前断开，这里不视为致命错误
             log.warn("执行 poweroff 命令时 SSH 连接已断开（正常情况）: {}", e.getMessage());
@@ -270,7 +265,7 @@ public class DockerDeployService {
                     instanceId, instanceId
             );
             try {
-                executeWsl(checkCmd);
+                executeWslUtil.executeWsl(checkCmd);
                 // 进程还在，继续等待
                 log.debug("等待 QEMU 进程退出... {}s", i + 1);
                 TimeUnit.SECONDS.sleep(1);
@@ -288,7 +283,7 @@ public class DockerDeployService {
                     "pkill -F /tmp/qemu-%s.pid 2>/dev/null || pkill -f 'qemu-system.*%s' 2>/dev/null || true",
                     instanceId, instanceId
             );
-            executeWsl(forceKillCmd);
+            executeWslUtil.executeWsl(forceKillCmd);
         }
 
         // 4. 清理辅助文件（PID、Monitor Socket、日志）
@@ -296,7 +291,7 @@ public class DockerDeployService {
                 "rm -f /tmp/qemu-%s.pid /tmp/qemu-%s-monitor.sock /tmp/qemu-%s.log",
                 instanceId, instanceId, instanceId
         );
-        executeWsl(cleanCmd);
+        executeWslUtil.executeWsl(cleanCmd);
 
         if (instance.getIpAddress() != null && !instance.getIpAddress().isEmpty()) {
             freeIp(instance.getIpAddress());
@@ -321,16 +316,16 @@ public class DockerDeployService {
                 "pkill -F /tmp/qemu-%s.pid 2>/dev/null || pkill -f 'qemu-system.*%s' 2>/dev/null || true",
                 instanceId, instanceId
         );
-        executeWsl(forceKillCmd);
+        executeWslUtil.executeWsl(forceKillCmd);
 
         // 2. 删除镜像文件
         String deleteImageCmd = "rm -f " + imagePath;
-        executeWsl(deleteImageCmd);
+        executeWslUtil.executeWsl(deleteImageCmd);
         log.info("已删除镜像文件: {}", imagePath);
 
         // 3. 删除实例目录（如果为空目录，删除；否则可能还有其它文件，但通常只有镜像）
         String deleteDirCmd = "rm -rf " + instanceDir;
-        executeWsl(deleteDirCmd);
+        executeWslUtil.executeWsl(deleteDirCmd);
         log.info("已删除实例目录: {}", instanceDir);
 
         // 4. 删除临时文件（PID、Monitor Socket、日志）
@@ -338,7 +333,7 @@ public class DockerDeployService {
                 "rm -f /tmp/qemu-%s.pid /tmp/qemu-%s-monitor.sock /tmp/qemu-%s.log",
                 instanceId, instanceId, instanceId
         );
-        executeWsl(cleanCmd);
+        executeWslUtil.executeWsl(cleanCmd);
 
         // 5. 释放端口和 IP（如果已分配）
         if (instance.getPort() != null && instance.getPort() > 0) {
@@ -389,8 +384,7 @@ public class DockerDeployService {
                 if (instance.getIpAddress() != null && !instance.getIpAddress().isEmpty()) {
                     allocatedIps.add(instance.getIpAddress());
                 }
-                // 可选：将实例信息重新放入内存缓存（如果有 VmInfo 缓存）
-                // 这里可以调用一个方法重建缓存，但当前设计没有 VmInfo，所以暂时略过
+                healthCheckService.sendImmediateHealthCheck(instance.getId());
             } else {
                 // 进程不存在，更新数据库状态为 ERROR
                 log.warn("实例 {} 标记为 RUNNING 但 QEMU 进程不存在，更新状态为 ERROR", instanceId);
@@ -416,9 +410,9 @@ public class DockerDeployService {
                             "pkill -F /tmp/qemu-%s.pid 2>/dev/null || pkill -f 'qemu-system.*%s' 2>/dev/null || true",
                             instanceId, instanceId
                     );
-                    executeWsl(killCmd);
+                    executeWslUtil.executeWsl(killCmd);
                     // 清理相关文件
-                    executeWsl("rm -f /tmp/qemu-" + instanceId + ".pid /tmp/qemu-" + instanceId + "-monitor.sock /tmp/qemu-" + instanceId + ".log");
+                    executeWslUtil.executeWsl("rm -f /tmp/qemu-" + instanceId + ".pid /tmp/qemu-" + instanceId + "-monitor.sock /tmp/qemu-" + instanceId + ".log");
                 } catch (Exception e) {
                     log.error("清理孤儿进程 {} 失败", instanceId, e);
                 }
@@ -447,7 +441,7 @@ public class DockerDeployService {
                             "    fi " +
                             "  fi " +
                             "done";
-            String output = executeWsl(scanCmd);
+            String output = executeWslUtil.executeWsl(scanCmd);
             for (String line : output.split("\n")) {
                 if (line.isEmpty()) continue;
                 String[] parts = line.split("\\|");
@@ -568,7 +562,7 @@ public class DockerDeployService {
                         "'ip link set eth1 up && ip addr add %s/24 dev eth1'",
                 vmPassword, sshPort, vmIp
         );
-        executeWsl(cmd);
+        executeWslUtil.executeWsl(cmd);
         log.info("已配置虚拟机 eth1 IP: {}", vmIp);
     }
 
@@ -581,7 +575,7 @@ public class DockerDeployService {
                         "'ip -4 addr show eth1 | grep inet | awk \"{print \\$2}\" | cut -d/ -f1'",
                 vmPassword, sshPort
         );
-        String ip = executeWsl(cmd);
+        String ip = executeWslUtil.executeWsl(cmd);
         if (ip.isEmpty()) {
             return null;
         }
@@ -604,15 +598,15 @@ public class DockerDeployService {
             log.info("开始清理实例 {} 的资源", instanceId);
 
             // 1. 强制杀死 QEMU 进程（通过 pidfile）
-            executeWsl("pkill -F /tmp/qemu-" + instanceId + ".pid 2>/dev/null || true");
+            executeWslUtil.executeWsl("pkill -F /tmp/qemu-" + instanceId + ".pid 2>/dev/null || true");
 
             // 2. 删除实例目录（包含差异磁盘）
-            executeWsl("rm -rf " + instanceDir);
+            executeWslUtil.executeWsl("rm -rf " + instanceDir);
 
             // 3. 删除辅助文件（PID、监控 socket、串口日志）
-            executeWsl("rm -f /tmp/qemu-" + instanceId + ".pid");
-            executeWsl("rm -f /tmp/qemu-" + instanceId + "-monitor.sock");
-            executeWsl("rm -f /tmp/qemu-" + instanceId + ".log");
+            executeWslUtil.executeWsl("rm -f /tmp/qemu-" + instanceId + ".pid");
+            executeWslUtil.executeWsl("rm -f /tmp/qemu-" + instanceId + "-monitor.sock");
+            executeWslUtil.executeWsl("rm -f /tmp/qemu-" + instanceId + ".log");
 
             log.info("实例 {} 资源清理完成", instanceId);
 
@@ -620,53 +614,5 @@ public class DockerDeployService {
             // 清理失败不应阻断流程，但需记录错误以便人工介入
             log.error("清理实例 {} 过程中发生异常，可能需要手动处理", instanceId, e);
         }
-    }
-
-    // ======================= WSL 命令执行工具 =======================
-
-    /**
-     * 在 WSL 中执行命令并返回标准输出（用于需要解析输出结果的场景）
-     *
-     * @param command 要执行的 bash 命令
-     * @return 命令的标准输出字符串（已 trim）
-     * @throws Exception 命令执行失败或超时
-     */
-    private String executeWsl(String command) throws Exception {
-        // 启动 wsl bash -s，从 stdin 读取命令
-        String[] cmdArray = {"cmd.exe", "/c", "wsl", "-d", wslDistro, "bash", "-s"};
-        ProcessBuilder pb = new ProcessBuilder(cmdArray);
-        pb.redirectErrorStream(true);
-        Process process = pb.start();
-
-        // 将命令写入 stdin
-        try (OutputStream os = process.getOutputStream()) {
-            os.write(command.getBytes(StandardCharsets.UTF_8));
-            os.write('\n');  // 命令以换行结束
-            os.flush();
-        }
-
-        // 读取输出
-        StringBuilder output = new StringBuilder();
-        try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                output.append(line).append("\n");
-            }
-        }
-
-        boolean finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
-        if (!finished) {
-            process.destroyForcibly();
-            throw new RuntimeException("命令执行超时: " + command);
-        }
-
-        int exitCode = process.exitValue();
-        if (exitCode != 0) {
-            throw new RuntimeException(String.format(
-                    "命令执行失败，退出码 %d，输出: %s", exitCode, output
-            ));
-        }
-        return output.toString().trim();
     }
 }

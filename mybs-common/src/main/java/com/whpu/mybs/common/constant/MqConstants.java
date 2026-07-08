@@ -1,5 +1,7 @@
 package com.whpu.mybs.common.constant;
 
+import javax.lang.model.element.NestingKind;
+
 public class MqConstants {
     public static final String DEPLOY_EXCHANGE = "deploy.exchange";
     public static final String DEPLOY_ROUTING_KEY = "deploy.routingkey";
@@ -13,4 +15,10 @@ public class MqConstants {
 
     public static final String DESTROY_QUEUE = "destroy.queue";
     public static final String DESTROY_ROUTING_KEY = "destroy.routingkey";
+
+    public static final String HEALTH_EXCHANGE = "health.exchange";
+    public static final String HEALTH_DELAY_QUEUE = "health.delay.queue";
+    public static final String HEALTH_WORK_QUEUE = "health.work.queue";
+    public static final String HEALTH_DELAY_ROUTING_KEY = "health.delay.routingkey";
+    public static final String HEALTH_WORK_ROUTING_KEY = "health.work.routingkey";
 }

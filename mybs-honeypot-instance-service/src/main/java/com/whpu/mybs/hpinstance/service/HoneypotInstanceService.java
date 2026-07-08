@@ -15,9 +15,11 @@ import com.whpu.mybs.hpinstance.mapper.HoneypotInstanceMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
@@ -33,6 +35,8 @@ public class HoneypotInstanceService extends ServiceImpl<HoneypotInstanceMapper,
     private final HoneypotInstanceMapper instanceMapper;
 
     private final RabbitTemplate rabbitTemplate;
+
+    private final HealthCheckService healthCheckService;
 
     /**
      * 分页查询
@@ -133,7 +137,7 @@ public class HoneypotInstanceService extends ServiceImpl<HoneypotInstanceMapper,
 
     @Transactional
     public void updateStatus(Long id, String code) {
-        HoneypotInstance instance = getAndCheck(id);
+        HoneypotInstance instance = instanceMapper.selectById(id);
         instance.setStatus(code);
         instanceMapper.updateById(instance);
     }
@@ -147,5 +151,17 @@ public class HoneypotInstanceService extends ServiceImpl<HoneypotInstanceMapper,
                 .set(HoneypotInstance::getLastHeartbeat, LocalDateTime.now())
                 .set(HoneypotInstance::getStatus, code);
         instanceMapper.update(null, wrapper);
+        // 只有更新为 RUNNING 时才发送健康检查，且必须在事务提交后执行
+        if (InstanceStatus.RUNNING.getCode().equals(code)) {
+            TransactionSynchronizationManager.registerSynchronization(
+                    new TransactionSynchronization() {
+                        @Override
+                        public void afterCommit() {
+                            // 事务已提交，此时发送消息，消费者能读到最新状态
+                            healthCheckService.sendImmediateHealthCheck(id);
+                        }
+                    }
+            );
+        }
     }
 }
