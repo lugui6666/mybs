@@ -110,8 +110,15 @@ public class HoneypotInstanceService extends ServiceImpl<HoneypotInstanceMapper,
     @Transactional
     public void destroy(Long id) {
         HoneypotInstance instance = getAndCheck(id);
-        instance.setStatus(InstanceStatus.DESTROYED.getCode());
-        instanceMapper.updateById(instance);
+        // 检查状态：只有 STOPPED、ERROR、DESTROYED 状态才允许销毁？或者只要是已停止或错误状态即可
+        // 若为 RUNNING，需要先停止，但我们可以让 Worker 处理停止逻辑
+        // 这里只做校验：不能销毁已经 DESTROYED 的
+        if (InstanceStatus.DESTROYED.getCode().equals(instance.getStatus())) {
+            throw new BusinessException(ResultCode.HP_INSTANCE_STATUS_ERROR.getCode(), "实例已销毁");
+        }
+        // 发送销毁消息
+        rabbitTemplate.convertAndSend(MqConstants.DEPLOY_EXCHANGE, MqConstants.DESTROY_ROUTING_KEY, id);
+        log.info("已发送销毁实例 {} 的消息到队列", id);
     }
 
     private HoneypotInstance getAndCheck(Long id) {

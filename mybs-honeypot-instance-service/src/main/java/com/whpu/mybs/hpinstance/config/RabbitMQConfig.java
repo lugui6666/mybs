@@ -52,4 +52,16 @@ public class RabbitMQConfig {
                 .to(deployExchange)
                 .with(MqConstants.START_ROUTING_KEY);
     }
+
+    @Bean
+    public Queue destroyQueue() {
+        return new Queue(MqConstants.DESTROY_QUEUE, true);
+    }
+
+    @Bean
+    public Binding destroyBinding(Queue destroyQueue, DirectExchange deployExchange) {
+        return BindingBuilder.bind(destroyQueue)
+                .to(deployExchange)
+                .with(MqConstants.DESTROY_ROUTING_KEY);
+    }
 }

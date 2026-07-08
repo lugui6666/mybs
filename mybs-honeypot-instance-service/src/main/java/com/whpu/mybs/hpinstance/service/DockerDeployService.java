@@ -1,9 +1,13 @@
 package com.whpu.mybs.hpinstance.service;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.whpu.mybs.common.dto.HoneypotTypeDTO;
 import com.whpu.mybs.common.dto.R;
+import com.whpu.mybs.common.enums.InstanceStatus;
 import com.whpu.mybs.hpinstance.entity.HoneypotInstance;
 import com.whpu.mybs.hpinstance.feign.HoneypotTypeFeignClient;
+import com.whpu.mybs.hpinstance.mapper.HoneypotInstanceMapper;
+import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -15,12 +19,16 @@ import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 
 /**
@@ -69,7 +77,7 @@ public class DockerDeployService {
 
     private final Set<Integer> allocatedPorts = ConcurrentHashMap.newKeySet();
 
-    private final HoneypotInstanceService instanceService;
+    private final HoneypotInstanceMapper instanceMapper; // 注入 Mapper
 
     /**
      * 部署或启动实例（智能判断：若镜像不存在则克隆，否则直接启动）
@@ -295,6 +303,163 @@ public class DockerDeployService {
         }
 
         log.info("虚拟机实例 {} 已停止，资源已释放", instanceId);
+    }
+
+    /**
+     * 销毁虚拟机实例：删除镜像文件、释放端口和 IP、清理临时文件
+     */
+    public void destroyVm(HoneypotInstance instance) throws Exception {
+        Long id = instance.getId();
+        String instanceId = id.toString();
+        String instanceDir = instanceBasePath + "/" + instanceId;
+        String imagePath = instanceDir + "/disk.qcow2";
+
+        log.info("开始销毁实例 {} 的资源", instanceId);
+
+        // 1. 确保虚拟机已停止（如果还在运行则强制 kill，但调用前应已 stop）
+        String forceKillCmd = String.format(
+                "pkill -F /tmp/qemu-%s.pid 2>/dev/null || pkill -f 'qemu-system.*%s' 2>/dev/null || true",
+                instanceId, instanceId
+        );
+        executeWsl(forceKillCmd);
+
+        // 2. 删除镜像文件
+        String deleteImageCmd = "rm -f " + imagePath;
+        executeWsl(deleteImageCmd);
+        log.info("已删除镜像文件: {}", imagePath);
+
+        // 3. 删除实例目录（如果为空目录，删除；否则可能还有其它文件，但通常只有镜像）
+        String deleteDirCmd = "rm -rf " + instanceDir;
+        executeWsl(deleteDirCmd);
+        log.info("已删除实例目录: {}", instanceDir);
+
+        // 4. 删除临时文件（PID、Monitor Socket、日志）
+        String cleanCmd = String.format(
+                "rm -f /tmp/qemu-%s.pid /tmp/qemu-%s-monitor.sock /tmp/qemu-%s.log",
+                instanceId, instanceId, instanceId
+        );
+        executeWsl(cleanCmd);
+
+        // 5. 释放端口和 IP（如果已分配）
+        if (instance.getPort() != null && instance.getPort() > 0) {
+            freePort(instance.getPort());
+        }
+        if (instance.getIpAddress() != null && !instance.getIpAddress().isEmpty()) {
+            freeIp(instance.getIpAddress());
+        }
+
+        log.info("实例 {} 资源销毁完成", instanceId);
+    }
+
+    /**
+     * 服务启动时自动调用，恢复实例状态
+     */
+    @PostConstruct
+    public void restore() {
+        log.info("开始恢复实例状态...");
+
+        // 1. 查询数据库中所有状态为 RUNNING 的实例
+        LambdaQueryWrapper<HoneypotInstance> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(HoneypotInstance::getStatus, InstanceStatus.RUNNING.getCode());
+        List<HoneypotInstance> runningInstances = instanceMapper.selectList(wrapper);
+
+        if (runningInstances.isEmpty()) {
+            log.info("没有正在运行的实例需要恢复");
+            return;
+        }
+
+        log.info("发现 {} 个数据库标记为 RUNNING 的实例", runningInstances.size());
+
+        // 2. 扫描 WSL 中所有正在运行的 QEMU 进程（获取 PID 和实例 ID 映射）
+        Map<String, Integer> aliveProcesses = scanRunningQemuProcesses();
+
+        // 3. 遍历每个实例，检查进程是否存活
+        for (HoneypotInstance instance : runningInstances) {
+            String instanceId = instance.getId().toString();
+            Integer pid = aliveProcesses.get(instanceId);
+
+            if (pid != null && pid > 0) {
+                // 进程存活，恢复资源
+                log.info("实例 {} (PID={}) 仍在运行，恢复资源占用", instanceId, pid);
+                // 恢复端口占用
+                if (instance.getPort() != null) {
+                    allocatedPorts.add(instance.getPort());
+                }
+                // 恢复 IP 占用
+                if (instance.getIpAddress() != null && !instance.getIpAddress().isEmpty()) {
+                    allocatedIps.add(instance.getIpAddress());
+                }
+                // 可选：将实例信息重新放入内存缓存（如果有 VmInfo 缓存）
+                // 这里可以调用一个方法重建缓存，但当前设计没有 VmInfo，所以暂时略过
+            } else {
+                // 进程不存在，更新数据库状态为 ERROR
+                log.warn("实例 {} 标记为 RUNNING 但 QEMU 进程不存在，更新状态为 ERROR", instanceId);
+                instance.setStatus(InstanceStatus.ERROR.getCode());
+                instanceMapper.updateById(instance);
+                // 释放数据库中的资源（端口/IP 不需要手动释放，因为内存中没占用，新部署可复用）
+                // 但为避免重复，建议后续清理残留文件
+                cleanupFailedInstance(instance); // 可调用已有的清理方法
+            }
+        }
+
+        // 4. 处理孤儿进程（数据库无记录但进程仍在运行）
+        Set<String> dbInstanceIds = runningInstances.stream()
+                .map(inst -> inst.getId().toString())
+                .collect(Collectors.toSet());
+        for (Map.Entry<String, Integer> entry : aliveProcesses.entrySet()) {
+            String instanceId = entry.getKey();
+            if (!dbInstanceIds.contains(instanceId)) {
+                log.warn("发现孤儿进程：实例 {} (PID={})，数据库无对应记录，强制终止", instanceId, entry.getValue());
+                // 强制终止进程并清理文件
+                try {
+                    String killCmd = String.format(
+                            "pkill -F /tmp/qemu-%s.pid 2>/dev/null || pkill -f 'qemu-system.*%s' 2>/dev/null || true",
+                            instanceId, instanceId
+                    );
+                    executeWsl(killCmd);
+                    // 清理相关文件
+                    executeWsl("rm -f /tmp/qemu-" + instanceId + ".pid /tmp/qemu-" + instanceId + "-monitor.sock /tmp/qemu-" + instanceId + ".log");
+                } catch (Exception e) {
+                    log.error("清理孤儿进程 {} 失败", instanceId, e);
+                }
+            }
+        }
+
+        log.info("实例状态恢复完成，已恢复 {} 个 RUNNING 实例，清理孤儿进程 {} 个",
+                runningInstances.size() - (int) aliveProcesses.values().stream().filter(p -> p == 0).count(),
+                aliveProcesses.size() - dbInstanceIds.size());
+    }
+
+    /**
+     * 扫描 WSL 中正在运行的 QEMU 进程，返回 map: instanceId -> PID
+     */
+    private Map<String, Integer> scanRunningQemuProcesses() {
+        Map<String, Integer> result = new HashMap<>();
+        try {
+            // 通过 /tmp/qemu-*.pid 文件扫描
+            String scanCmd =
+                    "for pid_file in /tmp/qemu-*.pid; do " +
+                            "  if [ -f \"$pid_file\" ]; then " +
+                            "    PID=$(cat \"$pid_file\" 2>/dev/null) && " +
+                            "    if kill -0 $PID 2>/dev/null; then " +
+                            "      INSTANCE_ID=$(basename \"$pid_file\" .pid | sed 's/qemu-//') && " +
+                            "      echo \"$INSTANCE_ID|$PID\" " +
+                            "    fi " +
+                            "  fi " +
+                            "done";
+            String output = executeWsl(scanCmd);
+            for (String line : output.split("\n")) {
+                if (line.isEmpty()) continue;
+                String[] parts = line.split("\\|");
+                if (parts.length == 2) {
+                    result.put(parts[0].trim(), Integer.parseInt(parts[1].trim()));
+                }
+            }
+            log.info("扫描到 {} 个正在运行的 QEMU 进程", result.size());
+        } catch (Exception e) {
+            log.error("扫描 QEMU 进程失败", e);
+        }
+        return result;
     }
 
     // ======================= 构建 QEMU 命令 =======================
