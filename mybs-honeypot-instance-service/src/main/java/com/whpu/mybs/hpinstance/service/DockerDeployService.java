@@ -119,7 +119,7 @@ public class DockerDeployService {
             // 6. 配置虚拟机网络（多播网卡 IP）
             configureVmNetwork(sshPort, vmIp);
 
-            // 7. （可选）获取实际 IP 以确认
+            // 7. 获取实际 IP 以确认
             String actualIp = getVmIp(sshPort);
             if (actualIp != null && !actualIp.isEmpty()) {
                 instance.setIpAddress(actualIp);
@@ -128,8 +128,8 @@ public class DockerDeployService {
                 log.warn("未获取到 eth1 IP，但已配置，使用分配的 IP: {}", vmIp);
             }
 
-            // 8. （可选）在虚拟机内启动 MySQL
-            // startMysqlInVm(sshPort);
+            // 8. 在虚拟机内启动 docker
+            startDockerInVm(sshPort);
 
             log.info("实例 {} 启动成功", instanceId);
 
@@ -228,9 +228,9 @@ public class DockerDeployService {
     /**
      * 在虚拟机内启动 MySQL 容器（docker compose up -d）
      */
-    private void startMysqlInVm(int sshPort) throws Exception {
+    private void startDockerInVm(int sshPort) throws Exception {
         String cmd = String.format(
-                "sshpass -p '%s' ssh -o StrictHostKeyChecking=no -p %d root@localhost 'cd /app && docker compose up -d'",
+                "sshpass -p '%s' ssh -o StrictHostKeyChecking=no -p %d root@localhost 'docker compose up -d'",
                 vmPassword, sshPort
         );
         executeWsl(cmd);
