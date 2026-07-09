@@ -8,6 +8,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.validation.BindException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -64,6 +65,13 @@ public class GlobalExceptionHandler {
     public R<Void> handleConstraintViolationException(ConstraintViolationException e) {
         log.warn("约束违反: {}", e.getMessage());
         return R.fail(ResultCode.PARAM_ERROR.getCode(), e.getMessage());
+    }
+
+    // ========== 处理缺少请求头异常 ==========
+    @ExceptionHandler(MissingRequestHeaderException.class)
+    public R<Void> handleMissingRequestHeader(MissingRequestHeaderException e) {
+        log.warn("缺少请求头: {}", e.getMessage());
+        return R.fail(ResultCode.PARAM_MISSING.getCode(), e.getMessage());
     }
 
     /**
