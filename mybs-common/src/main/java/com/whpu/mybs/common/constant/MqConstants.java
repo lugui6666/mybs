@@ -21,4 +21,8 @@ public class MqConstants {
     public static final String HEALTH_WORK_QUEUE = "health.work.queue";
     public static final String HEALTH_DELAY_ROUTING_KEY = "health.delay.routingkey";
     public static final String HEALTH_WORK_ROUTING_KEY = "health.work.routingkey";
+
+    public static final String LOG_EXCHANGE = "logs.exchange";
+    public static final String LOG_QUEUE = "logs.queue";
+    public static final String LOG_ROUTING_KEY = "logs.routingkey";
 }

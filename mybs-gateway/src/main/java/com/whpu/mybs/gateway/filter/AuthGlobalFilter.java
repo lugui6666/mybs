@@ -42,7 +42,8 @@ public class AuthGlobalFilter implements GlobalFilter, Ordered {
         this.jwtTokenProvider = new JwtTokenProvider(secret, expiration);
         this.whiteList = Arrays.asList(
                 "/api/auth/login",
-                "/api/auth/register"
+                "/api/auth/register",
+                "/api/logs/collect"
         );
     }
 

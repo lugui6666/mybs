@@ -59,7 +59,7 @@ spring:
         - id: log-service
           uri: lb://mybs-log-service
           predicates:
-            - Path=/api/log/**
+            - Path=/api/logs/**
 
 # JWT 配置
 jwt:
