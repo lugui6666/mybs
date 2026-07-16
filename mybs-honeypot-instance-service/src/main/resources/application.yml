@@ -22,6 +22,9 @@ spring:
         namespace: public
         import-check:
           enabled: false
+    sentinel:
+      transport:
+        dashboard: 127.0.0.1:8090
   rabbitmq:
     host: 127.0.0.1
     port: 5672
@@ -33,7 +36,6 @@ spring:
         concurrency: 5
         max-concurrency: 10
         prefetch: 1
-
 mybatis-plus:
   global-config:
     db-config:
@@ -44,3 +46,6 @@ mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
     log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+feign:
+  sentinel:
+    enabled: true

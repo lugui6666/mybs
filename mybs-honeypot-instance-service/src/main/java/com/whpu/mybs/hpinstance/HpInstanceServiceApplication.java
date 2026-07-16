@@ -1,5 +1,6 @@
 package com.whpu.mybs.hpinstance;
 
+import com.whpu.mybs.hpinstance.config.FeignConfig;
 import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -8,7 +9,7 @@ import org.springframework.cloud.openfeign.EnableFeignClients;
 
 @SpringBootApplication(scanBasePackages = {"com.whpu.mybs.hpinstance", "com.whpu.mybs.common"})
 @EnableDiscoveryClient
-@EnableFeignClients(basePackages = "com.whpu.mybs.hpinstance.feign")
+@EnableFeignClients(basePackages = "com.whpu.mybs.hpinstance.feign", defaultConfiguration = FeignConfig.class)
 @MapperScan("com.whpu.mybs.hpinstance.mapper")
 public class HpInstanceServiceApplication {
 

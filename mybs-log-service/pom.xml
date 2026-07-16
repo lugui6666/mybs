@@ -47,6 +47,12 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- sentinel -->
+        <dependency>
+            <groupId>com.alibaba.cloud</groupId>
+            <artifactId>spring-cloud-starter-alibaba-sentinel</artifactId>
+        </dependency>
+
         <!-- Elasticsearch 客户端 -->
         <dependency>
             <groupId>co.elastic.clients</groupId>

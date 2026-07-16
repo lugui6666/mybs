@@ -22,6 +22,9 @@ spring:
         namespace: public
         import-check:
           enabled: false
+    sentinel:
+      transport:
+        dashboard: 127.0.0.1:8090
   # Redis (用于 Session 管理和 Token 存储)
   data:
     redis:
