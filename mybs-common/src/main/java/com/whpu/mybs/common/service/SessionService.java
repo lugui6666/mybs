@@ -44,9 +44,9 @@ public class SessionService {
     /**
      * 删除用户 Token（登出时调用）
      */
-    public boolean deleteUserToken(String userId) {
+    public void deleteUserToken(String userId) {
         String key = TOKEN_KEY_PREFIX + userId;
-        return Boolean.TRUE.equals(redisTemplate.delete(key));
+        redisTemplate.delete(key);
     }
 
     /**
