@@ -46,3 +46,7 @@ Thumbs.db
 
 # Nacos
 nacos/
+
+# allure
+allure-report/
+allure-results/
