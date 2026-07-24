@@ -6,10 +6,7 @@ import lombok.extern.slf4j.Slf4j;
 
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
-import java.util.Date;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 /**
  * JWT 令牌工具类 — 生成、解析、校验 Token
@@ -43,6 +40,7 @@ public class JwtTokenProvider {
         Date expiryDate = new Date(now.getTime() + expiration);
 
         return Jwts.builder()
+                .id(UUID.randomUUID().toString())
                 .claims(claims)
                 .subject(String.valueOf(userId))
                 .issuedAt(now)
